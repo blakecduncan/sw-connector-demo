@@ -1,7 +1,7 @@
 import { http, createConfig } from "wagmi";
 import { mainnet, sepolia } from "wagmi/chains";
 import { metaMask, safe } from "wagmi/connectors";
-import { createSmartWalletConnector } from "./src/sdk/createSmartWalletConnector";
+import { createSmartWalletConnector } from "./src/sdk";
 import { arbitrumSepolia, base } from "@account-kit/infra";
 
 export const config = createConfig({
