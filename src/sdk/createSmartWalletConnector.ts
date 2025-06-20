@@ -1,172 +1,197 @@
-import type { CreateConnectorFn, Connector } from "wagmi";
-import { createConnector } from "wagmi";
+import { createConnector, type Connector, type CreateConnectorFn } from "wagmi";
 import {
   getAddress,
   UserRejectedRequestError,
   type Address,
+  type Chain,
   type EIP1193Provider,
+  type Hex,
 } from "viem";
-import { getSmartWalletClient } from "./util/getSmartwalletClient";
+import { getSmartWalletClient } from "./util/getSmartWalletClient";
+
+/* ------------------------------------------------------------------ */
+/* Types & constants                                                  */
+/* ------------------------------------------------------------------ */
 
 export interface CreateSmartWalletConnectorOptions {
-  // Add specific config types here based on your needs
-  [key: string]: unknown;
-  config?: {
-    apiKey?: string;
-  };
+  /** Alchemy/Infura key used by the AA backend */
+  apiKey: string;
+  /** Optional chain override. Defaults to `arbitrumSepolia`. */
+  chain?: Chain;
+  /** Enable verbose console output in development. */
+  debug?: boolean;
+  /**
+   * Whether to simulate programme‑matic disconnect like
+   * Wagmi's `injected` connector. Defaults to `true`.
+   */
+  shimDisconnect?: boolean;
 }
 
+const STORAGE_KEY = "wagmi.smartwallet.shimDisconnect";
+
+/* ------------------------------------------------------------------ */
+/* Implementation                                                     */
+/* ------------------------------------------------------------------ */
+
 export function createSmartWalletConnector(
-  baseConnector: CreateConnectorFn | Connector,
-  options: CreateSmartWalletConnectorOptions = {}
+  base: CreateConnectorFn | Connector,
+  options: CreateSmartWalletConnectorOptions
 ): CreateConnectorFn {
-  // Acknowledge options to avoid unused warning
-  void options;
+  if (!options?.apiKey)
+    throw new Error("createSmartWalletConnector: `apiKey` missing");
 
-  // let accountsChanged: Connector["onAccountsChanged"] | undefined;
-  // let chainChanged: Connector["onChainChanged"] | undefined;
-  // let disconnect: Connector["onDisconnect"] | undefined;
+  return createConnector<EIP1193Provider>((wagmiConfig) => {
+    const baseConnector = typeof base === "function" ? base(wagmiConfig) : base;
 
-  type Properties = {
-    connect(parameters?: {
-      chainId?: number | undefined;
-      instantOnboarding?: boolean | undefined;
-      isReconnecting?: boolean | undefined;
-    }): Promise<{
-      accounts: readonly Address[];
-      chainId: number;
-    }>;
-  };
-
-  return createConnector<EIP1193Provider, Properties>((config) => {
-    // If baseConnector is a CreateConnectorFn, call it to get the actual connector
-    const connector =
-      typeof baseConnector === "function"
-        ? baseConnector(config)
-        : baseConnector;
-
+    /* -------------------------------------------------------------- */
+    /* Internal state                                                 */
+    /* -------------------------------------------------------------- */
     let smartWalletClient: Awaited<
       ReturnType<typeof getSmartWalletClient>
     > | null = null;
 
+    let detachListeners: (() => void) | null = null;
+
+    const log = options.debug
+      ? (...args: unknown[]) => console.debug("[SmartWalletConnector]", ...args)
+      : () => {};
+
+    /* -------------------------------------------------------------- */
+    /* Helpers                                                        */
+    /* -------------------------------------------------------------- */
+    const attachListeners = (provider: EIP1193Provider) => {
+      const onAccountsChanged = (accounts: Address[]) => {
+        wagmiConfig.emitter.emit("connect", { accounts, chainId: 0 });
+      };
+      const onChainChanged = (chainId: Hex) => {
+        const numChainId = parseInt(chainId, 16);
+        wagmiConfig.emitter.emit("change", { chainId: numChainId });
+      };
+      const onDisconnect = () => {
+        // Handle disconnect
+      };
+
+      provider.on?.("accountsChanged", onAccountsChanged);
+      provider.on?.("chainChanged", onChainChanged);
+      provider.on?.("disconnect", onDisconnect);
+
+      return () => {
+        provider.removeListener?.("accountsChanged", onAccountsChanged);
+        provider.removeListener?.("chainChanged", onChainChanged);
+        provider.removeListener?.("disconnect", onDisconnect);
+      };
+    };
+
+    const ensureProvider = async (): Promise<EIP1193Provider> => {
+      if (smartWalletClient)
+        return smartWalletClient as unknown as EIP1193Provider;
+
+      const raw = (await baseConnector.getProvider()) as EIP1193Provider;
+      const [owner] = (await raw.request({
+        method: "eth_accounts",
+      })) as string[];
+      if (!owner) return raw; // not yet authorised – fall back
+
+      smartWalletClient = await getSmartWalletClient({
+        eip1193Provider: raw,
+        apiKey: options.apiKey,
+        chain: options.chain,
+        owner: getAddress(owner),
+        debug: options.debug,
+      });
+      log("AA client initialised", smartWalletClient);
+      return smartWalletClient as unknown as EIP1193Provider;
+    };
+
+    /* -------------------------------------------------------------- */
+    /* Public connector API                                           */
+    /* -------------------------------------------------------------- */
     return {
-      ...connector,
-      id: `${connector.id}-smart-wallet`,
-      name: `${connector.name} (Smart Wallet)`,
-      type: `${connector.type}-smart-wallet` as const,
+      ...baseConnector,
+      id: `${baseConnector.id}-smart-wallet`,
+      name: `${baseConnector.name} (Smart Wallet)`,
+      type: `${baseConnector.type}-smart-wallet` as const,
 
-      async connect(params = {}) {
-        const { chainId } = params;
-        try {
-          await connector.connect(params);
-          await this.getProvider();
-          const accounts = await this.getAccounts();
+      async connect({ chainId, ...rest } = {}) {
+        // short‑circuit if user hit "disconnect" previously
+        if (options.shimDisconnect !== false)
+          localStorage.removeItem(STORAGE_KEY);
 
-          // if (!accountsChanged) {
-          //   accountsChanged = this.onAccountsChanged.bind(this);
-          //   provider.on("accountsChanged", accountsChanged);
-          // }
-          // if (!chainChanged) {
-          //   chainChanged = this.onChainChanged.bind(this);
-          //   provider.on("chainChanged", chainChanged);
-          // }
-          // if (!disconnect) {
-          //   disconnect = this.onDisconnect.bind(this);
-          //   provider.on("disconnect", disconnect);
-          // }
+        // delegate to base connector (triggers the wallet pop‑up)
+        await baseConnector.connect({
+          chainId,
+          ...rest,
+        });
 
-          // Switch to chain if provided
-          let currentChainId = await connector.getChainId();
-          if (chainId && currentChainId !== chainId) {
-            const chain = await this.switchChain!({ chainId }).catch(
-              (error) => {
-                if (error.code === UserRejectedRequestError.code) throw error;
-                return { id: currentChainId };
-              }
-            );
-            currentChainId = chain?.id ?? currentChainId;
-          }
+        // make sure AA provider is ready (no extra pop‑up)
+        await ensureProvider();
+        const account = await smartWalletClient?.requestAccount();
+        const accounts = account ? [account.address] : [];
 
-          return { accounts, chainId: currentChainId };
-        } catch (error) {
-          if (
-            /(user closed modal|accounts received is empty|user denied account|request rejected)/i.test(
-              (error as Error).message
+        // handle optional chain switch
+        let active = await baseConnector.getChainId();
+        if (chainId && active !== chainId) {
+          try {
+            await this.switchChain?.({ chainId });
+            active = chainId;
+          } catch (err: unknown) {
+            if (
+              err &&
+              typeof err === "object" &&
+              "code" in err &&
+              err.code === UserRejectedRequestError.code
             )
-          )
-            throw new UserRejectedRequestError(error as Error);
-          throw error;
+              throw err;
+          }
         }
+
+        return { accounts, chainId: active };
       },
 
       async disconnect() {
-        connector.disconnect();
+        if (options.shimDisconnect !== false)
+          localStorage.setItem(STORAGE_KEY, "true");
+
+        detachListeners?.();
+        detachListeners = null;
         smartWalletClient = null;
+        await baseConnector.disconnect?.();
       },
 
       async getProvider(): Promise<EIP1193Provider> {
-        // If we have a smart wallet client, return it
-        // Note: Smart wallet client may not fully implement EIP1193Provider interface
-        // but we'll cast it for compatibility
-        if (smartWalletClient) {
-          return smartWalletClient as unknown as EIP1193Provider;
-        }
-        const provider = (await connector.getProvider()) as EIP1193Provider;
-
-        const accounts = (
-          (await provider.request({
-            method: "eth_accounts",
-          })) as string[]
-        ).map((x) => getAddress(x));
-
-        if (accounts.length > 0) {
-          smartWalletClient = await getSmartWalletClient({
-            eip1193Provider: provider as EIP1193Provider,
-            apiKey: options.config?.apiKey as string,
-          });
-          await smartWalletClient?.requestAccount();
-          console.log({ chain: smartWalletClient?.chain });
-          return smartWalletClient as unknown as EIP1193Provider;
-        }
-
-        // Otherwise return the base connector's provider
+        const provider = await ensureProvider();
+        // attach listeners once
+        if (!detachListeners) detachListeners = attachListeners(provider);
         return provider;
       },
 
       async getAccounts() {
-        const provider = (await connector.getProvider()) as EIP1193Provider;
-        const ownerAccounts = (
-          (await provider.request({
-            method: "eth_accounts",
-          })) as string[]
-        ).map((x) => getAddress(x));
-        if (ownerAccounts.length > 0) {
-          const accounts = await smartWalletClient?.listAccounts({
-            signerAddress: ownerAccounts[0],
-          });
-          console.log(accounts);
-        }
-        const account = await smartWalletClient?.requestAccount();
-        console.log(account);
-        return account?.address ? [account?.address] : [];
+        const provider = await ensureProvider();
+        if (provider.request === undefined) return [];
+        const [account] = (await provider.request({
+          method: "eth_accounts",
+        })) as string[];
+        return account ? [getAddress(account)] : [];
       },
 
-      // Forward all other methods to the base connector
       async getChainId() {
-        const chainId = await connector.getChainId();
-        return chainId;
+        return baseConnector.getChainId();
       },
-      isAuthorized: connector.isAuthorized,
-      switchChain: connector.switchChain,
-      setup: connector.setup,
-      onAccountsChanged: connector.onAccountsChanged,
-      onChainChanged: connector.onChainChanged,
-      onConnect: connector.onConnect,
-      onDisconnect: (error) => {
-        smartWalletClient = null;
-        connector.onDisconnect?.(error);
+
+      async isAuthorized() {
+        if (options.shimDisconnect !== false) {
+          if (localStorage.getItem(STORAGE_KEY) === "true") return false;
+        }
+        try {
+          const provider = await ensureProvider();
+          const accounts = (await provider.request({
+            method: "eth_accounts",
+          })) as string[];
+          return accounts.length > 0;
+        } catch {
+          return false;
+        }
       },
-      onMessage: connector.onMessage,
     };
   });
 }

@@ -1,41 +1,45 @@
-import { createSmartWalletClient } from "@account-kit/wallet-client";
-import type { EIP1193Provider } from "viem";
-import { alchemy, arbitrumSepolia } from "@account-kit/infra";
-import { createWalletClient, custom } from "viem";
-import { type SmartAccountSigner, WalletClientSigner } from "@aa-sdk/core";
-// import { base } from "viem/chains";
+import { createSmartWalletClient } from '@account-kit/wallet-client'
+import {
+  createWalletClient,
+  custom,
+  type Chain,
+  type EIP1193Provider,
+} from 'viem'
+import { WalletClientSigner, type SmartAccountSigner } from '@aa-sdk/core'
+import { arbitrumSepolia, alchemy } from '@account-kit/infra'
 
 export async function getSmartWalletClient({
   eip1193Provider,
   apiKey,
+  owner,
+  chain = arbitrumSepolia,
+  debug,
 }: {
-  eip1193Provider: EIP1193Provider;
-  apiKey: string;
+  eip1193Provider: EIP1193Provider
+  apiKey: string
+  owner: `0x${string}`
+  chain?: Chain
+  debug?: boolean
 }) {
-  const transport = alchemy({
-    apiKey,
-  });
+  const log = debug
+    ? (...args: unknown[]) => console.debug('[SmartWalletClient]', ...args)
+    : () => {}
 
-  const [account] = await window.ethereum.request({
-    method: "eth_requestAccounts",
-  });
-
+  const transport = alchemy({ apiKey })
   const walletClient = createWalletClient({
-    account,
+    account: owner,
     transport: custom(eip1193Provider),
-    chain: arbitrumSepolia,
-  });
+    chain,
+  })
 
-  const signer: SmartAccountSigner = new WalletClientSigner(
-    walletClient,
-    "json-rpc"
-  );
+  const signer: SmartAccountSigner = new WalletClientSigner(walletClient, 'json-rpc')
 
-  const client = createSmartWalletClient({
+  log('WalletClientSigner ready', signer)
+
+  return createSmartWalletClient({
     transport,
-    chain: arbitrumSepolia,
-    mode: "remote",
+    chain,
+    mode: 'remote',
     signer,
-  });
-  return client;
+  })
 }
