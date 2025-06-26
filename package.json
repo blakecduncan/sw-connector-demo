@@ -10,7 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@account-kit/infra": "^4.43.1",
+    "@account-kit/core": "^4.45.0",
+    "@account-kit/infra": "^4.45.0",
     "@account-kit/wallet-client": "^0.1.0-alpha.9",
     "@tanstack/react-query": "^5.80.10",
     "react": "^19.1.0",
