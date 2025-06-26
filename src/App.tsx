@@ -3,6 +3,7 @@ import { WalletOptions } from "./components/wallet-options";
 import { useAccount } from "wagmi";
 import "./App.css";
 import { SendCallsComponent } from "./components/send-calls";
+import { SendTransaction } from "./components/send-transaction";
 
 function App() {
   const { isConnected } = useAccount();
@@ -14,6 +15,7 @@ function App() {
         <div>
           <Account />
           <SendCallsComponent />
+          <SendTransaction />
         </div>
       ) : (
         <div>

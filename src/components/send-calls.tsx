@@ -56,7 +56,7 @@ export function SendCallsComponent() {
 
   return (
     <div className="p-6 max-w-md mx-auto bg-white rounded-lg shadow-md">
-      <h2 className="text-xl font-bold mb-4">Send Empty Transaction</h2>
+      <h2 className="text-xl font-bold mb-4">wallet_sendCalls: Send Transaction</h2>
 
       <div className="space-y-4">
         <button

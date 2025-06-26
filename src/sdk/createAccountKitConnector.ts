@@ -9,6 +9,11 @@ import {
   type GetSmartAccountClientParams,
   type SupportedAccountTypes,
   getSigner,
+  watchSignerStatus,
+  type SignerStatus,
+  getAccount,
+  watchAccount,
+  type GetAccountResult,
 } from "@account-kit/core";
 import { createConnector, type CreateConnectorFn } from "wagmi";
 import { type Chain, type EIP1193Provider } from "viem";
@@ -73,7 +78,7 @@ export function createAccountKitConnector<
         await reconnect(options.config);
 
         // ensure user is authenticated via OAuth if not already connected
-        const signerStatus = getSignerStatus(options.config);
+        const signerStatus = await waitForSignerReady(options.config);
         const signer = getSigner(options.config);
 
         if (
@@ -102,12 +107,19 @@ export function createAccountKitConnector<
           if (chain) await setAaChain(options.config, chain);
         }
 
-        const { address, client } = getSmartAccountClient(
+        // Wait for account to be ready
+        const accountResult = await waitForAccountReady(
           options.smartAccountParams,
           options.config
         );
-        const accounts = address ? [address] : [];
-        const connectedId = client?.chain.id ?? getAaChain(options.config).id;
+
+
+        const accounts: readonly `0x${string}`[] =
+          accountResult.status === "READY" && accountResult.account?.address
+            ? [accountResult.account.address as `0x${string}`]
+            : [];
+
+        const connectedId = getAaChain(options.config).id;
 
         return { accounts, chainId: connectedId };
       },
@@ -136,7 +148,8 @@ export function createAccountKitConnector<
       },
 
       async isAuthorized() {
-        return getSignerStatus(options.config).isConnected;
+        const status = await waitForSignerReady(options.config);
+        return status.isConnected;
       },
 
       async switchChain({ chainId }) {
@@ -162,5 +175,52 @@ export function createAccountKitConnector<
         wagmiConfig.emitter.emit("disconnect");
       },
     };
+  });
+}
+
+function waitForSignerReady(
+  config: AlchemyAccountsConfig
+): Promise<SignerStatus> {
+  const status = getSignerStatus(config);
+  // already ready (either connected or disconnected)
+  if (!status.isInitializing && !status.isAuthenticating) {
+    return Promise.resolve(status);
+  }
+  return new Promise((resolve) => {
+    const unsubscribe = watchSignerStatus(config)((st) => {
+      if (!st.isInitializing && !st.isAuthenticating) {
+        unsubscribe();
+        resolve(st);
+      }
+    });
+  });
+}
+
+function waitForAccountReady<TAccount extends SupportedAccountTypes>(
+  smartAccountParams: GetSmartAccountClientParams<Chain, TAccount>,
+  config: AlchemyAccountsConfig
+): Promise<GetAccountResult<TAccount>> {
+  const account = getAccount(smartAccountParams, config);
+
+  // already ready
+  if (account.status === "READY" && account.account) {
+    return Promise.resolve(account);
+  }
+
+  // already failed
+  if (account.status === "ERROR") {
+    return Promise.resolve(account);
+  }
+
+  return new Promise((resolve) => {
+    const unsubscribe = watchAccount(
+      smartAccountParams.type,
+      config
+    )((accountState) => {
+      if (accountState.status === "READY" || accountState.status === "ERROR") {
+        unsubscribe();
+        resolve(accountState);
+      }
+    });
   });
 }
