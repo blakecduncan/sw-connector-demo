@@ -1,9 +1,10 @@
-import { http, createConfig } from "wagmi";
+import { http } from "wagmi";
 import { mainnet, sepolia } from "wagmi/chains";
 import { metaMask } from "wagmi/connectors";
 import {
   createSmartWalletConnector,
   createAccountKitConnector,
+  createConfig,
 } from "./src/sdk";
 import {
   base as baseChain,
